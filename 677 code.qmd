@@ -1,0 +1,364 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+---
+
+```{r}
+# MA677 Final Project
+
+
+set.seed(677)
+
+# ------------------------------------------------------------
+# 1. Create folders
+# ------------------------------------------------------------
+
+if (!dir.exists("data")) {
+  dir.create("data")
+}
+
+if (!dir.exists("figures")) {
+  dir.create("figures")
+}
+
+if (!dir.exists("output")) {
+  dir.create("output")
+}
+
+
+# ------------------------------------------------------------
+# 2. Simulate simple 2x2 DiD data
+# ------------------------------------------------------------
+
+n_per_group <- 100
+time_periods <- c(0, 1)
+
+data <- expand.grid(
+  id = 1:(2 * n_per_group),
+  post = time_periods
+)
+
+# First 100 units are control, next 100 are treated
+data$treat <- ifelse(data$id > n_per_group, 1, 0)
+
+# True treatment effect
+true_effect <- 3
+
+# Outcome model:
+# baseline = 10
+# treated baseline difference = 2
+# common post-period time trend = 1.5
+# treatment effect = 3 for treated units in post period
+data$y <- 10 +
+  2 * data$treat +
+  1.5 * data$post +
+  true_effect * (data$treat * data$post) +
+  rnorm(nrow(data), mean = 0, sd = 1)
+
+write.csv(data, "data/simulated_did_data.csv", row.names = FALSE)
+
+
+# ------------------------------------------------------------
+# 3. Compute simple 2x2 DiD estimate
+# ------------------------------------------------------------
+
+mean_table <- aggregate(
+  y ~ treat + post,
+  data = data,
+  FUN = mean
+)
+
+print(mean_table)
+
+control_pre  <- mean_table$y[mean_table$treat == 0 & mean_table$post == 0]
+control_post <- mean_table$y[mean_table$treat == 0 & mean_table$post == 1]
+treated_pre  <- mean_table$y[mean_table$treat == 1 & mean_table$post == 0]
+treated_post <- mean_table$y[mean_table$treat == 1 & mean_table$post == 1]
+
+did_estimate <- (treated_post - treated_pre) - (control_post - control_pre)
+
+cat("\nSimple 2x2 DiD estimate:", did_estimate, "\n")
+cat("True treatment effect:", true_effect, "\n")
+
+
+# ------------------------------------------------------------
+# 4. Estimate DiD regression
+# ------------------------------------------------------------
+
+did_model <- lm(y ~ treat + post + treat:post, data = data)
+
+summary(did_model)
+
+did_regression_estimate <- coef(did_model)["treat:post"]
+
+cat("\nRegression DiD estimate:", did_regression_estimate, "\n")
+
+
+# Save regression output
+sink("output/did_regression_output.txt")
+cat("Simple 2x2 DiD estimate:", did_estimate, "\n")
+cat("True treatment effect:", true_effect, "\n\n")
+print(mean_table)
+cat("\n")
+print(summary(did_model))
+sink()
+
+
+# ------------------------------------------------------------
+# 5. Plot simple DiD trends
+# ------------------------------------------------------------
+
+group_means <- mean_table
+group_means$group <- ifelse(group_means$treat == 1, "Treated", "Control")
+group_means$period <- ifelse(group_means$post == 1, "Post", "Pre")
+
+png("figures/did_trends.png", width = 900, height = 650)
+
+plot(
+  group_means$post[group_means$treat == 0],
+  group_means$y[group_means$treat == 0],
+  type = "b",
+  pch = 16,
+  lwd = 2,
+  ylim = range(group_means$y),
+  xaxt = "n",
+  xlab = "Time Period",
+  ylab = "Average Outcome",
+  main = "Difference-in-Differences Illustration"
+)
+
+axis(1, at = c(0, 1), labels = c("Pre", "Post"))
+
+lines(
+  group_means$post[group_means$treat == 1],
+  group_means$y[group_means$treat == 1],
+  type = "b",
+  pch = 17,
+  lwd = 2
+)
+
+# Counterfactual treated trend based on control group's time trend
+counterfactual_treated_post <- treated_pre + (control_post - control_pre)
+
+segments(
+  x0 = 0,
+  y0 = treated_pre,
+  x1 = 1,
+  y1 = counterfactual_treated_post,
+  lty = 2,
+  lwd = 2
+)
+
+segments(
+  x0 = 1,
+  y0 = counterfactual_treated_post,
+  x1 = 1,
+  y1 = treated_post,
+  lty = 3,
+  lwd = 2
+)
+
+text(
+  x = 1,
+  y = (counterfactual_treated_post + treated_post) / 2,
+  labels = "DiD effect",
+  pos = 4
+)
+
+legend(
+  "topleft",
+  legend = c("Control", "Treated", "Treated counterfactual"),
+  pch = c(16, 17, NA),
+  lty = c(1, 1, 2),
+  lwd = c(2, 2, 2),
+  bty = "n"
+)
+
+dev.off()
+
+
+# ------------------------------------------------------------
+# 6. Simulate event-study style data
+# ------------------------------------------------------------
+
+set.seed(678)
+
+n_units <- 200
+time_points <- -4:4
+
+event_data <- expand.grid(
+  id = 1:n_units,
+  event_time = time_points
+)
+
+event_data$treat <- ifelse(event_data$id > n_units / 2, 1, 0)
+
+# Treatment begins at event_time = 0
+event_data$post <- ifelse(event_data$event_time >= 0, 1, 0)
+
+# Dynamic treatment effect:
+# zero before treatment, positive after treatment
+event_data$treatment_effect <- ifelse(
+  event_data$treat == 1 & event_data$event_time >= 0,
+  1 + 0.5 * event_data$event_time,
+  0
+)
+
+# Outcome:
+# common time trend + treated baseline difference + treatment effect
+event_data$y <- 10 +
+  2 * event_data$treat +
+  0.5 * event_data$event_time +
+  event_data$treatment_effect +
+  rnorm(nrow(event_data), mean = 0, sd = 1)
+
+write.csv(event_data, "data/simulated_event_study_data.csv", row.names = FALSE)
+
+
+# ------------------------------------------------------------
+# 7. Estimate event-study style regression
+# ------------------------------------------------------------
+
+event_data$event_time_factor <- factor(event_data$event_time)
+
+event_model <- lm(
+  y ~ treat + event_time_factor + treat:event_time_factor,
+  data = event_data
+)
+
+summary(event_model)
+
+sink("output/event_study_regression_output.txt")
+print(summary(event_model))
+sink()
+
+
+# ------------------------------------------------------------
+# 8. Plot event-study style group means
+# ------------------------------------------------------------
+
+event_means <- aggregate(
+  y ~ treat + event_time,
+  data = event_data,
+  FUN = mean
+)
+
+png("figures/event_study_group_trends.png", width = 900, height = 650)
+
+plot(
+  event_means$event_time[event_means$treat == 0],
+  event_means$y[event_means$treat == 0],
+  type = "b",
+  pch = 16,
+  lwd = 2,
+  ylim = range(event_means$y),
+  xlab = "Event Time",
+  ylab = "Average Outcome",
+  main = "Event Study Style Plot"
+)
+
+lines(
+  event_means$event_time[event_means$treat == 1],
+  event_means$y[event_means$treat == 1],
+  type = "b",
+  pch = 17,
+  lwd = 2
+)
+
+abline(v = 0, lty = 2, lwd = 2)
+
+legend(
+  "topleft",
+  legend = c("Control", "Treated", "Treatment starts"),
+  pch = c(16, 17, NA),
+  lty = c(1, 1, 2),
+  lwd = c(2, 2, 2),
+  bty = "n"
+)
+
+dev.off()
+
+
+# ------------------------------------------------------------
+# 9. Extract event-study interaction coefficients
+# ------------------------------------------------------------
+
+coef_table <- summary(event_model)$coefficients
+
+interaction_rows <- grepl("treat:event_time_factor", rownames(coef_table))
+
+event_coef <- data.frame(
+  term = rownames(coef_table)[interaction_rows],
+  estimate = coef_table[interaction_rows, "Estimate"],
+  std_error = coef_table[interaction_rows, "Std. Error"],
+  p_value = coef_table[interaction_rows, "Pr(>|t|)"]
+)
+
+# Extract event time from term names
+event_coef$event_time <- as.numeric(
+  gsub("treat:event_time_factor", "", event_coef$term)
+)
+
+write.csv(event_coef, "output/event_study_coefficients.csv", row.names = FALSE)
+
+print(event_coef)
+
+
+# ------------------------------------------------------------
+# 10. Plot event-study coefficients
+# ------------------------------------------------------------
+
+png("figures/event_study_coefficients.png", width = 900, height = 650)
+
+plot(
+  event_coef$event_time,
+  event_coef$estimate,
+  type = "b",
+  pch = 16,
+  lwd = 2,
+  ylim = range(
+    event_coef$estimate - 1.96 * event_coef$std_error,
+    event_coef$estimate + 1.96 * event_coef$std_error
+  ),
+  xlab = "Event Time",
+  ylab = "Estimated Treatment Effect",
+  main = "Event Study Coefficients"
+)
+
+arrows(
+  x0 = event_coef$event_time,
+  y0 = event_coef$estimate - 1.96 * event_coef$std_error,
+  x1 = event_coef$event_time,
+  y1 = event_coef$estimate + 1.96 * event_coef$std_error,
+  angle = 90,
+  code = 3,
+  length = 0.05
+)
+
+abline(h = 0, lty = 2)
+abline(v = 0, lty = 2)
+
+dev.off()
+
+
+# ------------------------------------------------------------
+# 11. Final printed summary
+# ------------------------------------------------------------
+
+cat("\n========================================\n")
+cat("Project outputs created successfully.\n")
+cat("========================================\n")
+cat("Data files:\n")
+cat("- data/simulated_did_data.csv\n")
+cat("- data/simulated_event_study_data.csv\n\n")
+cat("Figures:\n")
+cat("- figures/did_trends.png\n")
+cat("- figures/event_study_group_trends.png\n")
+cat("- figures/event_study_coefficients.png\n\n")
+cat("Regression outputs:\n")
+cat("- output/did_regression_output.txt\n")
+cat("- output/event_study_regression_output.txt\n")
+cat("- output/event_study_coefficients.csv\n")
+cat("========================================\n")
+```
